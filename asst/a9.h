@@ -17,7 +17,9 @@ Image computeETF(const Image &im, const Image &tcur, float radius = 3.0f, float 
 
 Image ETF(const Image &im, float radius = 3.0f, int n = 1, float eta = 1.0f);
 
-Image lineConstruction(const Image &im, float sigmam = 3.0f, float sigmac = 1.0f,float rho = 0.99f, float tau = 1.0f, float radius = 3.0f, int n = 1, float eta = 1.0f);
+Image lineConstruction(const Image &im, float sigmam = 3.0f, float sigmac = 2.0f,float rho = 0.99f, float tau = 1.0f, float radius = 3.0f, int n = 1, float eta = 1.0f);
+
+vector<vector<float>> getStreamline(Image tangent, float x, float y, int n, float stepsize);
 
 vector<float> calculateGaussValues(float sigma, float n);
 
