@@ -17,7 +17,6 @@ Image computeETF(const Image &im, const Image &tcur, float radius, float eta) {
     Image gradMag = gradientMagnitude(lumi);
     gradMag = gradMag / gradMag.max(); //normalized
     Image tnew = Image(im.width(), im.height(), 3);
-    Image debugx = Image(im.width(), im.height(), 1);
     for (int x = 0; x < im.width(); x++)
     {
         for (int y = 0; y < im.height(); y++)
@@ -30,12 +29,12 @@ Image computeETF(const Image &im, const Image &tcur, float radius, float eta) {
                 {
                     // Equations 1-5
                     float ws = (float) (i*i + j*j ) <= radius*radius;
-                    float wm = 0.5f * (1.0f + tanh(eta * (gradMag.smartAccessor(x + i, y + j, 0) - gradMag(x, y, 0)))); //normalized grad?
-                    float tdot = tcur(x, y, 0) * tcur.smartAccessor(x+i, y+j, 0) + tcur(x, y, 1) * tcur.smartAccessor(x+i, y+j, 1);
+                    float wm = 0.5f * (1.0f + tanh(eta * (gradMag.smartAccessor(x + i, y + j, 0, true) - gradMag(x, y, 0)))); //normalized grad?
+                    float tdot = tcur(x, y, 0) * tcur.smartAccessor(x+i, y+j, 0, true) + tcur(x, y, 1) * tcur.smartAccessor(x+i, y+j, 1, true);
                     float wd = abs(tdot);
                     int sign = tdot > 0 ? 1 : -1;
-                    tnewsumx += tcur.smartAccessor(x+i, y+j, 0) * ws * wm * wd * sign;
-                    tnewsumy += tcur.smartAccessor(x+i, y+j, 1) * ws * wm * wd * sign;
+                    tnewsumx += tcur.smartAccessor(x+i, y+j, 0, true) * ws * wm * wd * sign;
+                    tnewsumy += tcur.smartAccessor(x+i, y+j, 1, true) * ws * wm * wd * sign;
                 }
                 
             }
@@ -47,14 +46,10 @@ Image computeETF(const Image &im, const Image &tcur, float radius, float eta) {
                 tnew(x, y, 0) = 0;
                 tnew(x, y, 1) = 0;
             }
-            debugx(x, y, 0) = tnew(x, y, 0);
-            //cout << x << " " << y << " " << tnew(x, y, 0) << " " << tnew(x, y, 1) << endl;
             
         }
         
     }
-    //(tnew).debug_write();
-    //((debugx + 1)/2).debug_write();
     return tnew;
 }
 
@@ -129,7 +124,7 @@ Image lineConstruction(const Image &im, float sigmam, float sigmac,float rho, fl
             //get streamline
             //Find region around x, y according to ETF
             vector<vector<float>> cx(p);
-            cx = getStreamline(etf, x, y, p, deltam);
+            cx = getStreamline(etf, x, y, p, deltam, true);
             // For cx,
             float H = 0.0f;
             for (int i = 0; i < p; i++)
@@ -148,7 +143,7 @@ Image lineConstruction(const Image &im, float sigmam, float sigmac,float rho, fl
                 for (int j = 0; j < q; j++)
                 {  
                     //Integral, Equation 6
-                    Fs += interpolateLin(lumi, ls[j][0], ls[j][1], 0) * f[j] * deltan;
+                    Fs += interpolateLin(lumi, ls[j][0], ls[j][1], 0, true) * f[j] * deltan;
                 }
                 //cout << Fs << endl;
                 //Integral, Equation 9
@@ -161,7 +156,7 @@ Image lineConstruction(const Image &im, float sigmam, float sigmac,float rho, fl
     return output;
 }
 
-vector<vector<float>> getStreamline(Image tangent, float x, float y, int n, float stepsize) {
+vector<vector<float>> getStreamline(Image tangent, float x, float y, int n, float stepsize, bool clamp) {
     vector<vector<float>> streamline(n);
     int nm = (n-1)/2;
     streamline[nm] = {x, y}; 
@@ -172,11 +167,11 @@ vector<vector<float>> getStreamline(Image tangent, float x, float y, int n, floa
         vector<float> tz; //tangent at z
         //forward
         z = streamline[nm + i - 1]; //previous coord
-        tz = {interpolateLin(tangent, z[0], z[1], 0), interpolateLin(tangent, z[0], z[1], 1)}; 
+        tz = {interpolateLin(tangent, z[0], z[1], 0, clamp), interpolateLin(tangent, z[0], z[1], 1, clamp)}; 
         streamline[nm + i] = {z[0] + stepsize * tz[0], z[1] + stepsize * tz[1]};
         //backward
         z = streamline[nm - i + 1];
-        tz = {interpolateLin(tangent, z[0], z[1], 0), interpolateLin(tangent, z[0], z[1], 1)};
+        tz = {interpolateLin(tangent, z[0], z[1], 0, clamp), interpolateLin(tangent, z[0], z[1], 1, clamp)};
         streamline[nm - i] = {z[0] - stepsize * tz[0], z[1] - stepsize * tz[1]};
     }
     return streamline;
@@ -192,21 +187,4 @@ vector<float> calculateGaussValues(float sigma, float n) {
         }
         return fData;
     }
-
-
-Image testGauss(float sigma, float n) {
-    vector<float> values = calculateGaussValues(sigma, n);
-    Image output = Image(n, 10, 1);
-    for (size_t i = 0; i < n; i++)
-    {
-        for (size_t j = 0; j < 10; j++)
-        {
-            output(i, j) = values[i];
-        }
-        
-    }
-    output = output / output.max();
-    return output;
-    
-}
 
