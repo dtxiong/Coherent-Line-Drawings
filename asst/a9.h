@@ -21,6 +21,7 @@ vector<vector<float>> getStreamline(Image tangent, float x, float y, int n, floa
 
 vector<float> calculateGaussValues(float sigma, float n);
 
+Image medianFilter(const Image& im, int radius = 1);
 
 #endif /* end of include guard: A10_H_PHUDVTKB */
 

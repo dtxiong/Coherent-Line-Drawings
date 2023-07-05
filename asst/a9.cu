@@ -1,5 +1,6 @@
 #include <iostream>
 #include "a9.cuh"
+#include "a9.h"
 
 
 using namespace std;
@@ -10,62 +11,62 @@ using namespace std;
 // Implements http://www.umsl.edu/cmpsci/faculty-sites/kang/publications/2007/npar07/kang_npar07_hi.pdf
 
 
-Image computeETFCUDA(const Image &im, const Image &tcur, float radius, float eta) {
+__global__ void computeETFCUDA(float* tcur, float* gradMag, float* tnew, int width, int height, float radius, float eta) {
     // Computes tnew from tcur
     // Uses the red channel for x direction, green channel for y direction. 
-    Image lumi = lumiChromi(im)[0];
-    Image gradMag = gradientMagnitude(lumi);
-    gradMag = gradMag / gradMag.max(); //normalized
-    Image tnew = Image(im.width(), im.height(), 3);
-    for (int x = 0; x < im.width(); x++)
-    {
-        for (int y = 0; y < im.height(); y++)
+
+    int x = (blockIdx.x) * blockDim.x + threadIdx.x;
+    int y = (blockIdx.y) * blockDim.y + threadIdx.y;
+    int index = x + y * width;
+
+    if (x >= 0 && x < width && y >= 0 && y < height) {
+
+        float tnewsumx = 0.0f;
+        float tnewsumy = 0.0f;
+        for (int i = -ceil(radius); i <= ceil(radius); i++)
         {
-            float tnewsumx = 0.0f;
-            float tnewsumy = 0.0f;
-            for (int i = -ceil(radius); i <= ceil(radius); i++)
+            for (int j = -ceil(radius); j <= ceil(radius); j++)
             {
-                for (int j = -ceil(radius); j <= ceil(radius); j++)
-                {
-                    // Equations 1-5
-                    float ws = (float) (i*i + j*j ) <= radius*radius;
-                    float wm = 0.5f * (1.0f + tanh(eta * (gradMag.smartAccessor(x + i, y + j, 0, true) - gradMag(x, y, 0)))); //normalized grad?
-                    float tdot = tcur(x, y, 0) * tcur.smartAccessor(x+i, y+j, 0, true) + tcur(x, y, 1) * tcur.smartAccessor(x+i, y+j, 1, true);
-                    float wd = abs(tdot);
-                    int sign = tdot > 0 ? 1 : -1;
-                    tnewsumx += tcur.smartAccessor(x+i, y+j, 0, true) * ws * wm * wd * sign;
-                    tnewsumy += tcur.smartAccessor(x+i, y+j, 1, true) * ws * wm * wd * sign;
-                }
+                // Equations 1-5
+                float ws = (float) (i*i + j*j ) <= radius*radius;
+                float wm = 0.5f * (1.0f + tanh(eta * (smartAccessorCUDA(gradMag, x + i, y + j, 0, width, height, true) - gradMag[index]))); //normalized grad?
+                float tdot = tcur[index] * smartAccessorCUDA(tcur, x+i, y+j, 0, width, height, true) + tcur[index + width * height] * smartAccessorCUDA(tcur, x+i, y+j, 1, width, height, true);
+                float wd = abs(tdot);
+                int sign = tdot > 0 ? 1 : -1;
+                tnewsumx += smartAccessorCUDA(tcur, x+i, y+j, 0, width, height, true) * ws * wm * wd * sign;
+                tnewsumy += smartAccessorCUDA(tcur, x+i, y+j, 1, width, height, true) * ws * wm * wd * sign;
+            }
                 
-            }
-            float k = sqrt(tnewsumx*tnewsumx + tnewsumy*tnewsumy);
-            if (k > 0.00001) {        
-                tnew(x, y, 0) = tnewsumx/k;
-                tnew(x, y, 1) = tnewsumy/k;
-            } else {
-                tnew(x, y, 0) = 0;
-                tnew(x, y, 1) = 0;
-            }
-            
         }
-        
+        float k = sqrt(tnewsumx*tnewsumx + tnewsumy*tnewsumy);
+        if (k > 0.00001) {        
+            tnew[index] = tnewsumx/k;
+            tnew[index + width * height] = tnewsumy/k;
+        } else {
+            tnew[index] = 0;
+            tnew[index + width * height] = 0;
+        }
+            
     }
-    return tnew;
 }
 
-Image ETFCUDA(const Image &im, float radius, int n, float eta) {
+float* ETFCUDA(const Image &im, float radius, int n, float eta) {
     //First compute t0
     Image lumi = lumiChromi(im)[0];
     Image gradX = gradientX(lumi);
     Image gradY = gradientY(lumi);
     Image t0 = Image(im.width(), im.height(), 3);
+    int width = im.width();
+    int height = im.height();
+
+    Image gradMag = gradientMagnitude(lumi);
+    gradMag = gradMag / gradMag.max(); //normalized
 
     //Calculate t0
     for (int i = 0; i < im.stride(2); i++)
     {
         float gradx = gradX(i);
         float grady = gradY(i);
-        //cout << gradx << " " << grady << endl;
         float mag = sqrt(gradx * gradx + grady * grady); 
         //perp to grad, counterclockwise
         if (mag >= 0.00001) {
@@ -77,16 +78,88 @@ Image ETFCUDA(const Image &im, float radius, int n, float eta) {
             t0(i + im.stride(2)) = 0;
         }
     }
-    Image tnew = t0;
-    //tnew.debug_write();
+
+    cudaError_t cudaStatus;
+    cudaDeviceReset();
+
+    float* deviceTangentImageData;
+    float* deviceOutputImageData;
+    float* deviceGradMagImageData;
+    float* hostTangentImageData = (float*)malloc(width * height * 3 * sizeof(float));
+    float* hostGradMagImageData = (float*)malloc(width * height * sizeof(float));
+    float* hostOutputImageData = (float*)malloc(width * height * 3 * sizeof(float));
+
+
+    cudaMalloc((void**)& deviceTangentImageData, width * height * 3 * sizeof(float));
+    cudaMalloc((void**)& deviceGradMagImageData, width * height * sizeof(float));
+    cudaMalloc((void**)& deviceOutputImageData, width * height * 3 * sizeof(float));
+
+
+    for (size_t i = 0; i < t0.number_of_elements(); i++)
+    {
+        hostTangentImageData[i] = t0(i);
+    }
+    for (size_t i = 0; i < gradMag.number_of_elements(); i++)
+    {
+        hostGradMagImageData[i] = gradMag(i);
+    }
+    for (size_t i = 0; i < t0.number_of_elements(); i++)
+    {
+        hostOutputImageData[i] = t0(i);
+    }
+
+    cudaMemcpy(deviceTangentImageData, hostTangentImageData,
+        width * height * 3 * sizeof(float),
+        cudaMemcpyHostToDevice);
+    cudaMemcpy(deviceGradMagImageData, hostGradMagImageData,
+        width * height * sizeof(float),
+        cudaMemcpyHostToDevice);
+
+    float* tnew = (float*) malloc(width * height * 3 * sizeof(float));
+    int renderSize = 16;
+    dim3 dimGrid(renderSize, renderSize);
+    dim3 dimBlock(ceil((float)width / renderSize), ceil((float)height / renderSize));
+
     for (int i = 0; i < n; i++)
     {
-        tnew = computeETFCUDA(im, t0, radius, eta);
-        t0 = tnew;
+        computeETFCUDA<<<dimBlock, dimGrid>>>(deviceTangentImageData, deviceGradMagImageData, deviceOutputImageData, width, height, radius, eta);
+        cudaMemcpy(deviceTangentImageData, deviceOutputImageData,
+            width * height * 3 * sizeof(float), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(hostOutputImageData, deviceOutputImageData,
+            width * height * 3 * sizeof(float), cudaMemcpyDeviceToHost);
+
     }
     //tnew.debug_write();
-    Image output = (tnew + 1)/2;
-    return output;
+
+    cudaStatus = cudaGetLastError();
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+        goto Error;
+    }
+
+    // cudaDeviceSynchronize waits for the kernel to finish, and returns
+    // any errors encountered during the launch.
+    cudaStatus = cudaDeviceSynchronize();
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
+        goto Error;
+    }
+
+
+Error: 
+    cudaMemset(deviceTangentImageData, 0, width * height * 3 * sizeof(float));
+    cudaMemset(deviceGradMagImageData, 0, width* height * sizeof(float));
+    cudaMemset(deviceOutputImageData, 0, width * height * 3 * sizeof(float));
+    
+    cudaFree(deviceTangentImageData);
+    cudaFree(deviceGradMagImageData);
+    cudaFree(deviceOutputImageData);
+
+    free(hostTangentImageData);
+    // free(hostOutputImageData);
+
+    return hostOutputImageData;
+
 }
 
 __global__ void lineKernel(float* lumiData, float* outputData, float* etfData, int width, int height, 
@@ -96,7 +169,10 @@ __global__ void lineKernel(float* lumiData, float* outputData, float* etfData, i
     int x = (blockIdx.x) * blockDim.x + threadIdx.x;
     int y = (blockIdx.y) * blockDim.y + threadIdx.y;
     int index = x + y * width;
-    
+    /*if (threadIdx.x == 0 && threadIdx.y == 0) {
+        printf("Block: (%d, %d)\n", blockIdx.x, blockIdx.y);
+    }*/
+
     float deltam = 1.0f;
     float deltan = 1.0f;
     float sigmas = 1.6 * sigmac;
@@ -169,13 +245,11 @@ __global__ void lineKernel(float* lumiData, float* outputData, float* etfData, i
                 float b = f[j];
                 Fs += interpolateLinCUDA(lumiData, ls[2 * j + 0], ls[2 * j + 1], 0, width, height, true) * f[j] * deltan;
             }
-            //cout << Fs << endl;
             //Integral, Equation 9
             H += gaussM[i] * Fs * deltam;
         }
      
         //Calculate Integral
-        // printf("x, y, H: %d, %d, %f \n", x, y, H);
         outputData[index] = (float)!((H < 0) && (1 + tanh(H) < tau));
 
     
@@ -264,9 +338,9 @@ Image lineConstructionCUDA(const Image &im, float sigmam, float sigmac,float rho
     
     Image lumi = lumiChromi(im)[0];
     cout << "Starting ETF" << endl;
-    Image etf = ETFCUDA(im, radius, n, eta);
+    float* etf = ETFCUDA(im, radius, n, eta);
+
     //etf = Image("Input/circleETF.png");
-    etf = etf * 2 - 1;
     Image output = Image(width, height, 1);
     cout << "Starting Line Construction" << endl;
     float deltam = 1.0f;
@@ -308,10 +382,7 @@ Image lineConstructionCUDA(const Image &im, float sigmam, float sigmac,float rho
     {
         hostLumiImageData[i] = lumi(i);
     }
-    for (size_t i = 0; i < etf.number_of_elements(); i++)
-    {
-        hostETFImageData[i] = etf(i);
-    }
+    memcpy(hostETFImageData, etf, width * height * 3 * sizeof(float));
 
     cudaMalloc((void**) &deviceLumiImageData, width * height * sizeof(float));
     cudaMalloc((void**) &deviceETFImageData, width * height * 3 * sizeof(float));
@@ -338,22 +409,19 @@ Image lineConstructionCUDA(const Image &im, float sigmam, float sigmac,float rho
     cudaMemcpy(deviceGaussM, gaussM, p * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(deviceF, fdata, q * sizeof(float), cudaMemcpyHostToDevice);
 
-    //between 1504 and 1520
     int renderSize = 16;
     dim3 dimGrid(renderSize, renderSize);
     dim3 dimBlock(ceil((float)width / renderSize), ceil((float)height / renderSize));
-    cout << "Before kernel" << endl;
+
     lineKernel<<<dimBlock, dimGrid>>>(deviceLumiImageData, deviceOutputImageData, deviceETFImageData, 
         width, height, sigmam, sigmac, tau, 
         deviceGaussC, deviceGaussS, deviceGaussM, deviceF);
-    cout << "After kernel" << endl;
     
     cudaStatus = cudaGetLastError();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
         goto Error;
     }
-    cout << "afterCudaLastError" << endl;
 
     // cudaDeviceSynchronize waits for the kernel to finish, and returns
     // any errors encountered during the launch.
@@ -363,20 +431,16 @@ Image lineConstructionCUDA(const Image &im, float sigmam, float sigmac,float rho
         goto Error;
     }
 
-    cout << "after synchronize" << endl;
 
     cudaMemcpy(hostOutputImageData, deviceOutputImageData, 
         width * height * sizeof(float), cudaMemcpyDeviceToHost);
 
-    cout << "after copy" << endl;
     for (size_t i = 0; i < output.number_of_elements(); i++)
     {
         output(i) = hostOutputImageData[i];
 
     }
-    cout << "before median Filter" << endl;
     output = medianFilter(output, 1);
-    cout << "after median Filter" << endl;
 
 
 Error:
@@ -436,26 +500,4 @@ vector<float> calculateGaussValuesCUDA(float sigma, float n) {
         fData[i] = (1.0f / sigma / sqrt(2 * M_PI)) * exp(-(i - offset) * (i - offset) / (2.0f * sigma * sigma));
     }
     return fData;
-}
-
-Image medianFilter(const Image &im, int radius) {
-    //For binary images only
-    Image output = Image(im.width(), im.height(), 1);
-    for (int x = 0; x < im.width(); x++)
-    {
-        for (int y = 0; y < im.height(); y++)
-        {
-            int numWhite = 0;
-            for (int i = -radius; i <= radius; i++)
-            {
-                for (int j = -radius; j <= radius; j++)
-                {
-                    numWhite += (im.smartAccessor(x + i, y + j, 0, true) > 0.5f);
-                    
-                }
-            }
-            output(x, y, 0) = (float)(numWhite >= 5);
-        }
-    }
-    return output;
 }

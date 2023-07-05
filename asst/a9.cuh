@@ -12,9 +12,9 @@
 using namespace std;
 
 
-Image computeETFCUDA(const Image &im, const Image &tcur, float radius = 3.0f, float eta = 1.0f);
+__global__ void computeETFCUDA(float* tcur, float* gradMag, float* tnew, int width, int height, float radius = 3.0f, float eta = 1.0f);
 
-Image ETFCUDA(const Image &im, float radius = 3.0f, int n = 1, float eta = 1.0f);
+float* ETFCUDA(const Image &im, float radius = 3.0f, int n = 1, float eta = 1.0f);
 
 __global__ void lineKernel(float* lumiData, float* outputData, float* etfData, int width, int height,
     float sigmam, float sigmac, float tau, 
@@ -29,8 +29,6 @@ Image lineConstructionCUDA(const Image &im, float sigmam = 3.0f, float sigmac = 
 vector<vector<float>> getStreamlineCUDA(Image tangent, float x, float y, int n, float stepsize);
 
 vector<float> calculateGaussValuesCUDA(float sigma, float n);
-
-Image medianFilter(const Image &im, int radius = 1);
 
 #endif /* end of include guard: A10_H_PHUDVTKB */
 

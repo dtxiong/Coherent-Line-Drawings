@@ -153,6 +153,8 @@ Image lineConstruction(const Image &im, float sigmam, float sigmac,float rho, fl
             output(x, y) = (float) !((H < 0) && (1 + tanh(H) < tau));
         }
     }
+    
+    output = medianFilter(output, 1);
     return output;
 }
 
@@ -188,3 +190,24 @@ vector<float> calculateGaussValues(float sigma, float n) {
         return fData;
     }
 
+Image medianFilter(const Image& im, int radius) {
+    //For binary images only
+    Image output = Image(im.width(), im.height(), 1);
+    for (int x = 0; x < im.width(); x++)
+    {
+        for (int y = 0; y < im.height(); y++)
+        {
+            int numWhite = 0;
+            for (int i = -radius; i <= radius; i++)
+            {
+                for (int j = -radius; j <= radius; j++)
+                {
+                    numWhite += (im.smartAccessor(x + i, y + j, 0, true) > 0.5f);
+
+                }
+            }
+            output(x, y, 0) = (float)(numWhite >= 5);
+        }
+    }
+    return output;
+}
